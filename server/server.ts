@@ -1,39 +1,57 @@
 import * as restify from 'restify'
-import {environment} from '../common/environment'
+import * as fs from 'fs'
+import * as mongoose from 'mongoose'
+import { environment } from '../common/environment'
+import { Router } from '../common/router'
+import { handleError } from './error.handler'
+import { tokenParser } from '../security/token.parser'
+
 
 export class Server {
 
     application: restify.Server
 
-    initRoutes(): Promise<any>{
+    initDb(): Promise<typeof mongoose> {
+        (<any>mongoose).Promise = global.Promise
+        return mongoose.connect(environment.db.url, {
+        })
+    }
+
+    initRoutes(routers: Router[]): Promise<any> {
         return new Promise((resolve, reject) => {
             try {
 
-                this.application = restify.createServer({
+                const options: restify.ServerOptions = {
                     name: 'meat-api',
                     version: '1.0.0'
-                })                
+                }
+                if (environment.security.enableHTTPS) {
+                    options.certificate = fs.readFileSync(environment.security.certificate),
+                        options.key = fs.readFileSync(environment.security.key)
+                }
+
+                this.application = restify.createServer(options)
+
+
+                // plugins
+                this.application.use(restify.plugins.bodyParser({
+                    mapParams: false
+                }))
+                this.application.use(restify.plugins.queryParser())
+                this.application.use(tokenParser)
+
 
                 // routes
-                this.application.get('/info', (req, res, next) => {
-                    res.json({
-                        browser: req.userAgent(),
-                        method: req.method,
-                        url: req.href(),
-                        path: req.path(),
-                        query: req.query
-                    })
-                    return next()
-                })
-                
-                this.application.use(restify.plugins.queryParser())
+                for (const router of routers) {
+                    router.applyRoutes(this.application)
+                }
 
                 this.application.listen(environment.server.port, () => {
-                  resolve(this.application)
-                    
+                    resolve(this.application)
+
                 })
 
-                
+                this.application.on('restifyError', handleError)
 
             } catch (error) {
                 reject(error)
@@ -41,7 +59,14 @@ export class Server {
         })
     }
 
-    bootstrap(): Promise<Server> {
-        return this.initRoutes().then(() => this)
+
+
+    bootstrap(routers: Router[] = []): Promise<Server> {
+        return this.initDb().then(() =>
+            this.initRoutes(routers).then(() => this))
+    }
+
+    shutdown() {
+        return mongoose.disconnect().then(() => this.application.close())
     }
 }
